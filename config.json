@@ -1,0 +1,9 @@
+{
+  "servers": [
+    {
+      "id": "test",
+      "url": "http://localhost:5106/paperplane",
+      "pswd": "a"
+    }
+  ]
+}
