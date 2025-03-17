@@ -1,115 +1,123 @@
 #!/usr/bin/env bun
 
 import { Command } from "commander";
-import ora from "ora";
 import chalk from "chalk";
 import { join } from "path";
-import config from "./config.json";
+import readline from "readline";
+import fs from "fs/promises";
 
 const program = new Command();
 
 program
-  .name("paperplane")
-  .description("Send projects and apps to your Linux server over HTTP")
-  .version("1.0.0");
+  .name(chalk.bold("paperplane"))
+  .version(chalk.gray("1.0.0"))
+  .description("A simple TUI To-Do app");
 
-let log = console.log;
-let logError = console.error;
+const dbPath = join(__dirname, "db.json");
 
-function properUrl(domain: string){
-  domain = domain.startsWith("http://") || domain.startsWith("https://") ? domain : `http://${domain}`;
-  return domain.endsWith("/paperplane") ? domain : `${domain}/paperplane`;
+if (await fs.exists(dbPath) == false) {
+  await fs.writeFile(dbPath, "{}");
 }
 
-const listServers = async () => {
-  const servers = config.servers;
+program
+  .command("add <taskID>")
+  .description("Add a new task with the given ID")
+  .action(async (taskID) => {
 
-  log(chalk.underline.bold.whiteBright("Available servers:"));
-  servers.forEach((server) => {
-    log(chalk.whiteBright(`  [${chalk.bold.red(server.id)}] ${chalk.blue(properUrl(server.url))}`));
-  });
-};
-
-const sendProject = async (id: string, folder: string) => {
-  const spinner = ora(`Sending ${folder} to server ${chalk.red.bold(id)}`).start();
-  const tarName = `${folder}.tar`;
-  const url = `${config.servers.find((server) => server.id === id)?.url}/upload/${tarName}`;
-
-  if(!url){
-    spinner.fail(chalk.red("Server not found"));
-    return;
-  }
-
-  if(!await Bun.file(join(folder, "deploy.sh")).exists()){
-    spinner.fail(chalk.red("deploy.sh not found in the folder"));
-    return;
-  }
-
-  spinner.color = "red";
-
-  try {
-
-    spinner.text = `Creating tarball of ${folder}`;
-    await Bun.$`tar -cvf ${tarName} ${folder}`.quiet();
-  
-    spinner.text = `Sending ${tarName} to server ${chalk.red.bold(id)}`;
-    const response = await fetch(url, {
-      method: "POST",
-      body: await Bun.file(tarName).text(),
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
     });
 
-    const data = await response.json();
-    if (response.ok) {
-      spinner.succeed(chalk.green(data.message));
-    } else {
-      throw new Error(JSON.stringify(data));
+    try {
+      rl.question("Enter task: ", async (task) => {
+        const db = JSON.parse(await fs.readFile(dbPath, "utf-8"));
+        db[taskID] = {
+          task,
+          done: false
+        };
+        await fs.writeFile(dbPath, JSON.stringify(db, null, 2));
+        console.log(chalk.green("Task added successfully!"));
+        rl.close();
+      });
+    } catch (error) {
+      console.log(chalk.red("Error adding task!"));
+      console.log(error);
     }
+  });
 
-    spinner.stop();
-    log(data.reponse)
-  } catch (error) {
-    //@ts-ignore
-    spinner.fail(chalk.red(error.message));
-    spinner.stop();
-  } finally {
-    await Bun.$`rm ${tarName}`;
-  }
-};
+program
+  .command("delete <taskID>")
+  .description("Delete a task with the given ID")
+  .action(async (taskID) => {
+    try {
+      const db = JSON.parse(await fs.readFile(dbPath, "utf-8"));
+      delete db[taskID];
+      await fs.writeFile(dbPath, JSON.stringify(db, null, 2));
+      console.log(chalk.green("Task deleted successfully!"));
+    } catch (error) {
+      console.log(chalk.red("Error deleting task!"));
+    }
+  });
 
-const disconnectServer = async (id: string) => {
-  let serverUrl = config.servers.find((server) => server.id === id)?.url;
-  let servers = config.servers.filter((server) => server.id !== id);
-  const newConfig = Object.assign({}, config, { servers });
-  await Bun.file("config.json").write(JSON.stringify(newConfig, null, 2));
-  log(`Disconnected from server ${chalk.red.bold(id)} at ${chalk.blue(serverUrl)}`);
-};
+program
+  .command("list")
+  .description("List all tasks")
+  .action(async () => {
+    try {
+      const db = JSON.parse(await fs.readFile(dbPath, "utf-8"));
+      console.log(chalk.green("Tasks:"));
 
-const connectServer = (id: string, url: string, pswd: string) => {
-  let servers = config.servers;
-  servers.push({ id, url: properUrl(url), pswd });
-  const newConfig = Object.assign({}, config, { servers });
-  Bun.file("config.json").write(JSON.stringify(newConfig, null, 2));
-  log(`Connected to server ${chalk.red.bold(id)} at ${chalk.blue(properUrl(url))}`);
-};
+      if(Object.keys(db).length === 0)
+        console.log(chalk.yellow("  No tasks found!"));
 
-program.command("list").description("List all connected servers\n").action(listServers);
+      for (const taskID in db) {
+        if (db[taskID].done)
+          console.log(chalk.strikethrough(` ${chalk.magenta(taskID)}: ${db[taskID].task} (done)`));
+        else
+          console.log(`${chalk.magenta(taskID)}: ${db[taskID].task}`);
+      }
+    } catch (error) {
+      console.log(chalk.red("Error listing tasks!"));
+    }
+  });
 
-program.command("send <id> <folder>").description(
-  "Send a folder to a server\n" + 
-  "<id>: The id of the server you want to send to.\n" +
-  "<folder>: The folder you want to send.\n"
-).action(sendProject);
+program
+  .command("edit <taskID>")
+  .description("Edit a task with the given ID")
+  .action(async (taskID) => {
 
-program.command("disconnect <id>").description(
-  "Disconnect from a server\n" +
-  "<id>: The id of the server you want to disconnect from.\n"
-).action(disconnectServer);
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
 
-program.command("connect <id> <url> <password>").description(
-  "Connect to a new server\n" +
-  "<id>: The id you want to assign the server.\n" +
-  "<url>: The url of the server.\n" +
-  "<password>: The password of the server.\n"
-).action(connectServer);
+    try {
+      const db = JSON.parse(await fs.readFile(dbPath, "utf-8"));
+      rl.question("Enter new task: ", async (task) => {
+        db[taskID].task = task;
+        await fs.writeFile(dbPath, JSON.stringify(db, null, 2));
+        console.log(chalk.green("Task edited successfully!"));
+        rl.close();
+      });
+    } catch (error) {
+      console.log(chalk.red("Error editing task!"));
+    }
+  });
+
+program
+  .command("done <taskID>")
+  .description("Mark a task with the given ID as done")
+  .action(async (taskID) => {
+    try {
+      const db = JSON.parse(await fs.readFile(dbPath, "utf-8"));
+      db[taskID].done = true;
+      await fs.writeFile(dbPath, JSON.stringify(db, null, 2));
+
+      console.log(chalk.green("Task marked as done successfully!"));
+    } catch (error) {
+      console.log(chalk.red("Error marking task as done!"));
+    }
+  });
 
 program.parse(process.argv);
